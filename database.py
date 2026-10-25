@@ -105,6 +105,23 @@ class BaseExpenseRepository(ABC):
         """Calculate monthly spending total and category breakdown."""
         pass
 
+    @abstractmethod
+    async def set_budget(self, user_id: int, amount: float) -> None:
+        """Set monthly budget limit for a user."""
+        pass
+
+    @abstractmethod
+    async def get_budget(self, user_id: int) -> Optional[float]:
+        """Retrieve monthly budget limit for a user, if configured."""
+        pass
+
+    @abstractmethod
+    async def get_all_expenses(
+        self, user_id: int, year: Optional[int] = None, month: Optional[int] = None
+    ) -> List[Expense]:
+        """Retrieve all expenses, optionally filtered by month, ordered by date desc."""
+        pass
+
 
 class SQLiteExpenseRepository(BaseExpenseRepository):
     """SQLite implementation of BaseExpenseRepository using async aiosqlite."""
@@ -126,6 +143,15 @@ class SQLiteExpenseRepository(BaseExpenseRepository):
                     date TEXT NOT NULL,
                     raw_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS budgets (
+                    user_id INTEGER PRIMARY KEY,
+                    monthly_budget REAL NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 """
             )
@@ -322,6 +348,45 @@ class SQLiteExpenseRepository(BaseExpenseRepository):
             ],
         }
 
+    async def set_budget(self, user_id: int, amount: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO budgets (user_id, monthly_budget, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    monthly_budget = excluded.monthly_budget,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, amount),
+            )
+            await db.commit()
+
+    async def get_budget(self, user_id: int) -> Optional[float]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT monthly_budget FROM budgets WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return float(row[0]) if row else None
+
+    async def get_all_expenses(
+        self, user_id: int, year: Optional[int] = None, month: Optional[int] = None
+    ) -> List[Expense]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if year and month:
+                prefix = f"{year:04d}-{month:02d}-%"
+                query = "SELECT * FROM expenses WHERE user_id = ? AND date LIKE ? ORDER BY date DESC, id DESC"
+                params = (user_id, prefix)
+            else:
+                query = "SELECT * FROM expenses WHERE user_id = ? ORDER BY date DESC, id DESC"
+                params = (user_id,)
+
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [Expense.from_row(r) for r in rows]
 
 
 class PostgresExpenseRepository(BaseExpenseRepository):
@@ -355,6 +420,11 @@ class PostgresExpenseRepository(BaseExpenseRepository):
                     date TEXT NOT NULL,
                     raw_message TEXT,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS budgets (
+                    user_id BIGINT PRIMARY KEY,
+                    monthly_budget DOUBLE PRECISION NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses (user_id, date);
                 CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses (created_at);
@@ -561,6 +631,57 @@ class PostgresExpenseRepository(BaseExpenseRepository):
                 for row in categories
             ],
         }
+
+    async def set_budget(self, user_id: int, amount: float) -> None:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO budgets (user_id, monthly_budget, updated_at)
+                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE
+                SET monthly_budget = EXCLUDED.monthly_budget, updated_at = CURRENT_TIMESTAMP
+                """,
+                user_id, float(amount),
+            )
+
+    async def get_budget(self, user_id: int) -> Optional[float]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT monthly_budget FROM budgets WHERE user_id = $1", user_id
+            )
+            return float(row["monthly_budget"]) if row else None
+
+    async def get_all_expenses(
+        self, user_id: int, year: Optional[int] = None, month: Optional[int] = None
+    ) -> List[Expense]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            if year and month:
+                prefix = f"{year:04d}-{month:02d}-%"
+                rows = await conn.fetch(
+                    "SELECT * FROM expenses WHERE user_id = $1 AND date LIKE $2 ORDER BY date DESC, id DESC",
+                    user_id, prefix,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM expenses WHERE user_id = $1 ORDER BY date DESC, id DESC",
+                    user_id,
+                )
+            return [
+                Expense(
+                    id=r["id"],
+                    user_id=r["user_id"],
+                    amount=float(r["amount"]),
+                    category=r["category"],
+                    description=r["description"],
+                    date=str(r["date"]),
+                    raw_message=r["raw_message"],
+                    created_at=str(r["created_at"]) if r["created_at"] else None,
+                )
+                for r in rows
+            ]
 
 
 # Dynamic repository selection: uses PostgreSQL/Supabase if DATABASE_URL is set, else SQLite
