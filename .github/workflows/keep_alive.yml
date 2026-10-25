@@ -1,0 +1,15 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    - cron: '*/12 * * * *'  # Tự động ping mỗi 12 phút
+  workflow_dispatch:        # Nút bấm chạy thử thủ công
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Service
+        run: |
+          curl -s -I "https://expense-tracker-bot-m42n.onrender.com" || true
+          echo "Render is kept awake!"
