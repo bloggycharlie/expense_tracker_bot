@@ -122,6 +122,26 @@ def parse_budget_amount(text: str) -> Optional[float]:
         return None
 
 
+def resolve_category(input_str: str) -> Optional[str]:
+    """Resolve user input string to one of the 5 canonical categories or '__total__'."""
+    clean = input_str.strip().lower()
+
+    if clean in ("tổng", "tong", "total", "tất cả", "tat ca", "all", "__total__"):
+        return "__total__"
+    if clean in ("ăn uống", "an uong", "ăn", "an", "food", "an sang", "an trua", "an toi", "đồ ăn", "do an"):
+        return "Ăn uống"
+    if clean in ("cà phê", "ca phe", "cf", "cafe", "coffee", "caffe", "nước", "nuoc", "trà sữa", "tra sua", "drink", "drinks"):
+        return "Cà phê"
+    if clean in ("công nghệ", "cong nghe", "tech", "sub", "subs", "subscription", "app", "apps", "phần mềm", "phan mem", "it", "saas"):
+        return "Công nghệ"
+    if clean in ("di chuyển", "di chuyen", "xăng", "xang", "grab", "be", "xe", "travel", "transport", "xe ôm", "xe om", "taxi"):
+        return "Di chuyển"
+    if clean in ("khác", "khac", "misc", "miscellaneous", "other", "others", "khac (misc)"):
+        return "Khác"
+
+    return None
+
+
 def render_progress_bar(pct: float, length: int = 10) -> str:
     """Render visual emoji progress bar (e.g. 🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜)."""
     filled = min(max(int(round(pct / 100 * length)), 0), length)
@@ -190,11 +210,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>hôm kia gửi xe 10k</code> ➔ Lưu ngày hôm kia\n\n"
         "<b>4. Nút Hoàn tác / Xóa:</b>\n"
         "Mỗi lần ghi nhận chi tiêu, bot gửi kèm nút <b>[❌ Hoàn tác]</b> để bạn xóa ngay nếu ghi nhầm.\n\n"
-        "<b>5. Quản lý Ngân sách & Cảnh báo:</b>\n"
-        "• <code>/budget 5tr</code>: Đặt hạn mức chi tiêu tháng 5.000.000 ₫\n"
-        "• <code>/budget</code>: Xem tiến độ chi tiêu theo hạn mức\n"
-        "• <code>/budget 0</code>: Tắt theo dõi ngân sách\n"
-        "• Bot sẽ tự động cảnh báo nếu bạn chi tiêu chạm <b>80%</b> và <b>100%</b> ngân sách!\n\n"
+        "<b>5. Quản lý Ngân sách theo Danh mục & Cảnh báo:</b>\n"
+        "• <code>/budget</code>: Xem bảng tiến độ chi tiêu của từng danh mục\n"
+        "• <code>/budget ăn uống 3tr</code>: Đặt hạn mức Ăn uống (3.000.000 ₫)\n"
+        "• <code>/budget cà phê 800k</code>: Đặt hạn mức Cà phê (hoặc <code>/budget cf 800k</code>)\n"
+        "• <code>/budget công nghệ 500k</code>: Đặt hạn mức Công nghệ / Subscriptions\n"
+        "• <code>/budget di chuyển 1tr</code>: Đặt hạn mức Đi lại / Grab / Xăng\n"
+        "• <code>/budget khác 500k</code>: Đặt hạn mức nhóm Khác / Misc\n"
+        "• <code>/budget tổng 6tr</code>: Đặt tổng ngân sách tháng (hoặc <code>/budget 6tr</code>)\n"
+        "• <code>/budget reset</code>: Xóa toàn bộ cấu hình ngân sách\n"
+        "• Bot tự động gửi cảnh báo khi từng nhóm hoặc tổng chi chạm <b>80%</b> và <b>100%</b> ngân sách!\n\n"
         "<b>6. Biểu đồ & Xuất file:</b>\n"
         "• <code>/chart</code>: Vẽ biểu đồ tròn phân tích cơ cấu chi tiêu tháng\n"
         "• <code>/export</code>: Tải file Excel chuyên nghiệp với đầy đủ công thức\n\n"
@@ -354,7 +379,7 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @restricted
 async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Manage monthly expense budget on /budget [amount]."""
+    """Manage monthly expense budget per category and overall on /budget."""
     user = update.effective_user
     if not user or not update.message:
         return
@@ -362,72 +387,165 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     args = context.args
     now = get_current_datetime()
 
-    # Case 1: Setting a new budget
+    # Case 1: Clearing/Resetting all budgets
+    if args and args[0].lower() in ("reset", "clear", "xoa", "xóa"):
+        await repo.clear_category_budgets(user.id)
+        await update.message.reply_text(
+            "✅ <b>Đã xóa toàn bộ cấu hình ngân sách (danh mục & tổng).</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Case 2: Setting a budget (overall or per category)
     if args:
-        raw_val = " ".join(args)
-        parsed_val = parse_budget_amount(raw_val)
-        if parsed_val is None:
-            await update.message.reply_text(
-                "⚠️ <b>Số tiền ngân sách không hợp lệ!</b>\n\n"
-                "Ví dụ thiết lập:\n"
-                "• <code>/budget 5tr</code> (5 triệu)\n"
-                "• <code>/budget 5000000</code>\n"
-                "• <code>/budget 0</code> (để tắt theo dõi ngân sách)",
-                parse_mode=ParseMode.HTML,
-            )
+        # Subcase 2A: Single argument -> overall total budget
+        if len(args) == 1:
+            parsed_total = parse_budget_amount(args[0])
+            if parsed_total is not None:
+                await repo.set_budget(user.id, parsed_total)
+                if parsed_total == 0.0:
+                    await update.message.reply_text(
+                        "✅ <b>Đã tắt tổng ngân sách tháng.</b>", parse_mode=ParseMode.HTML
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"🎯 <b>ĐÃ THIẾT LẬP TỔNG NGÂN SÁCH THÁNG {now.month:02d}/{now.year}</b>\n\n"
+                        f"• Hạn mức: <b>{format_currency(parsed_total)}</b>\n\n"
+                        "Bot sẽ cảnh báo khi tổng chi tiêu chạm ngưỡng <b>80%</b> và <b>100%</b> ngân sách!",
+                        parse_mode=ParseMode.HTML,
+                    )
+                return
+
+        # Subcase 2B: Multiple arguments -> Category + Amount
+        # Try: Amount is the last argument
+        cat_cand = " ".join(args[:-1])
+        amt_cand = args[-1]
+        resolved_cat = resolve_category(cat_cand)
+        parsed_amt = parse_budget_amount(amt_cand)
+
+        # If not matched, try: Amount is the first argument
+        if resolved_cat is None or parsed_amt is None:
+            amt_cand = args[0]
+            cat_cand = " ".join(args[1:])
+            resolved_cat = resolve_category(cat_cand)
+            parsed_amt = parse_budget_amount(amt_cand)
+
+        if resolved_cat is not None and parsed_amt is not None:
+            if resolved_cat == "__total__":
+                await repo.set_budget(user.id, parsed_amt)
+                action_text = "tắt" if parsed_amt == 0 else f"đặt <b>{format_currency(parsed_amt)}</b> cho"
+                await update.message.reply_text(
+                    f"🎯 <b>Đã {action_text} Tổng ngân sách tháng {now.month:02d}/{now.year}.</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await repo.set_category_budget(user.id, resolved_cat, parsed_amt)
+                emoji = get_category_emoji(resolved_cat)
+                if parsed_amt == 0:
+                    await update.message.reply_text(
+                        f"✅ <b>Đã tắt ngân sách cho danh mục {emoji} {resolved_cat}.</b>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"🎯 <b>ĐÃ THIẾT LẬP NGÂN SÁCH {emoji} {resolved_cat.upper()}</b>\n\n"
+                        f"• Hạn mức: <b>{format_currency(parsed_amt)}</b>\n\n"
+                        f"Bot sẽ tự động cảnh báo khi bạn chi tiêu chạm <b>80%</b> và <b>100%</b> ngân sách nhóm này!",
+                        parse_mode=ParseMode.HTML,
+                    )
             return
 
-        if parsed_val == 0.0:
-            await repo.set_budget(user.id, 0.0)
-            await update.message.reply_text(
-                "✅ <b>Đã tắt tính năng theo dõi ngân sách tháng.</b>", parse_mode=ParseMode.HTML
-            )
-            return
-
-        await repo.set_budget(user.id, parsed_val)
+        # Syntax Error fallback
         await update.message.reply_text(
-            f"🎯 <b>ĐÃ THIẾT LẬP NGÂN SÁCH THÁNG {now.month:02d}/{now.year}</b>\n\n"
-            f"• Hạn mức: <b>{format_currency(parsed_val)}</b>\n\n"
-            "Bot sẽ tự động gửi cảnh báo khi chi tiêu của bạn chạm ngưỡng <b>80%</b> và <b>100%</b> ngân sách!",
+            "⚠️ <b>Cú pháp đặt ngân sách không hợp lệ!</b>\n\n"
+            "👉 <b>Đặt ngân sách theo từng danh mục:</b>\n"
+            "• <code>/budget ăn uống 3tr</code>\n"
+            "• <code>/budget cà phê 800k</code> (hoặc <code>/budget cf 800k</code>)\n"
+            "• <code>/budget công nghệ 500k</code> (hoặc <code>/budget tech 500k</code>)\n"
+            "• <code>/budget di chuyển 1tr</code> (hoặc <code>/budget grab 1tr</code>)\n"
+            "• <code>/budget khác 500k</code> (hoặc <code>/budget misc 500k</code>)\n\n"
+            "👉 <b>Đặt tổng ngân sách cả tháng:</b>\n"
+            "• <code>/budget tổng 6tr</code> (hoặc <code>/budget 6tr</code>)\n"
+            "• <code>/budget reset</code> (để xóa tất cả)",
             parse_mode=ParseMode.HTML,
         )
         return
 
-    # Case 2: Viewing current budget
-    budget = await repo.get_budget(user.id)
-    if not budget or budget <= 0:
-        await update.message.reply_text(
-            "🎯 <b>BẠN CHƯA THIẾT LẬP HẠN MỨC NGÂN SÁCH THÁNG</b>\n\n"
-            "Để đặt hạn mức chi tiêu, bạn hãy gõ lệnh kèm số tiền:\n"
-            "• <code>/budget 5tr</code> (hoặc <code>/budget 5000000</code>)\n\n"
-            "<i>(Sau khi cài đặt, bot sẽ tự động theo dõi và cảnh báo nếu bạn tiêu vượt ngưỡng an toàn!)</i>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
+    # Case 3: Viewing current budget dashboard
     monthly = await repo.get_monthly_summary(user.id, now.year, now.month)
-    spent = monthly["total"]
-    remaining = max(budget - spent, 0.0)
-    pct = (spent / budget * 100) if budget > 0 else 0.0
-    bar = render_progress_bar(pct)
+    cat_spent_map = {c["category"]: c["total"] for c in monthly.get("categories", [])}
+    total_spent = monthly["total"]
 
-    status_emoji = "🟢" if pct < 80 else ("🟡" if pct < 100 else "🔴")
-    status_text = (
-        "Chi tiêu an toàn"
-        if pct < 80
-        else ("Sắp chạm hạn mức!" if pct < 100 else "ĐÃ VƯỢT HẠN MỨC!")
-    )
+    cat_budgets = await repo.get_category_budgets(user.id)
+    overall_budget = await repo.get_budget(user.id)
 
-    text = (
-        f"🎯 <b>TÌNH HÌNH NGÂN SÁCH THÁNG {now.month:02d}/{now.year}</b>\n\n"
-        f"• Hạn mức: <b>{format_currency(budget)}</b>\n"
-        f"• Đã chi: <b>{format_currency(spent)}</b> ({pct:.1f}%)\n"
-        f"• Còn lại: <b>{format_currency(remaining)}</b>\n\n"
-        f"Tiến độ: [{bar}] <b>{pct:.1f}%</b>\n"
-        f"Trạng thái: {status_emoji} <b>{status_text}</b>\n\n"
-        "💡 <i>Để đổi hạn mức, gõ: /budget &lt;số tiền&gt; (Ví dụ: /budget 6tr)</i>"
+    lines = [f"🎯 <b>BẢNG THEO DÕI NGÂN SÁCH THÁNG {now.month:02d}/{now.year}</b>\n"]
+
+    from config import CATEGORIES
+    for cat in CATEGORIES:
+        emoji = get_category_emoji(cat)
+        spent = cat_spent_map.get(cat, 0.0)
+        b_amount = cat_budgets.get(cat)
+
+        if b_amount and b_amount > 0:
+            rem = max(b_amount - spent, 0.0)
+            pct = (spent / b_amount * 100)
+            bar = render_progress_bar(pct, length=8)
+            status_tag = "🟢 An toàn" if pct < 80 else ("⚠️ Sắp chạm!" if pct < 100 else "🚨 ĐÃ VƯỢT!")
+            lines.append(
+                f"<b>{emoji} {cat}:</b>\n"
+                f"• Đã chi: <b>{format_currency(spent)}</b> / <b>{format_currency(b_amount)}</b> ({pct:.1f}%)\n"
+                f"• [{bar}] {status_tag} (Còn lại: <b>{format_currency(rem)}</b>)\n"
+            )
+        else:
+            lines.append(
+                f"<b>{emoji} {cat}:</b>\n"
+                f"• Đã chi: <b>{format_currency(spent)}</b> <i>(Chưa đặt hạn mức)</i>\n"
+            )
+
+    # Total summary row
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if overall_budget and overall_budget > 0:
+        tot_rem = max(overall_budget - total_spent, 0.0)
+        tot_pct = (total_spent / overall_budget * 100)
+        tot_bar = render_progress_bar(tot_pct, length=10)
+        tot_tag = "🟢 An toàn" if tot_pct < 80 else ("⚠️ Sắp chạm!" if tot_pct < 100 else "🚨 ĐÃ VƯỢT!")
+        lines.append(
+            f"💰 <b>TỔNG CHI TIÊU THÁNG:</b>\n"
+            f"• <b>{format_currency(total_spent)}</b> / <b>{format_currency(overall_budget)}</b> ({tot_pct:.1f}%)\n"
+            f"• [{tot_bar}] {tot_tag}\n"
+            f"• Còn lại: <b>{format_currency(tot_rem)}</b>"
+        )
+    else:
+        lines.append(
+            f"💰 <b>TỔNG CHI TIÊU THÁNG:</b> <b>{format_currency(total_spent)}</b> <i>(Chưa đặt tổng hạn mức)</i>"
+        )
+
+    lines.append("\n💡 <i>Bấm các nút bên dưới để xem hướng dẫn cài hạn mức nhanh:</i>")
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🍜 Ăn uống", callback_data="hint_budget_Ăn uống"),
+            InlineKeyboardButton("☕ Cà phê", callback_data="hint_budget_Cà phê"),
+        ],
+        [
+            InlineKeyboardButton("💻 Công nghệ", callback_data="hint_budget_Công nghệ"),
+            InlineKeyboardButton("🛵 Di chuyển", callback_data="hint_budget_Di chuyển"),
+        ],
+        [
+            InlineKeyboardButton("📦 Khác (Misc)", callback_data="hint_budget_Khác"),
+            InlineKeyboardButton("💰 Tổng ngân sách", callback_data="hint_budget_Tổng"),
+        ],
+        [
+            InlineKeyboardButton("🗑️ Xóa tất cả ngân sách", callback_data="clear_all_budgets"),
+        ],
+    ])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 @restricted
@@ -596,23 +714,49 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if num_items > 1:
         lines.append(f"\n📊 <b>Tổng cộng: {format_currency(total_amount)}</b>")
 
-    # In-line Budget Warning if user configured a monthly budget
+    # In-line Budget Warning if user configured monthly category/total budgets
     try:
+        monthly_status = await repo.get_monthly_summary(user.id, now.year, now.month)
+        cat_spent_map = {c["category"]: c["total"] for c in monthly_status.get("categories", [])}
+        cat_budgets = await repo.get_category_budgets(user.id)
+
+        # 1. Check category alerts for the categories in this message
+        affected_categories = {item.category for item in result.items}
+        alerted_categories = set()
+        for cat in affected_categories:
+            cat_b = cat_budgets.get(cat)
+            if cat_b and cat_b > 0:
+                cat_s = cat_spent_map.get(cat, 0.0)
+                cat_pct = (cat_s / cat_b * 100)
+                emoji = get_category_emoji(cat)
+                if cat_pct >= 100:
+                    lines.append(
+                        f"\n🚨 <b>VƯỢT HẠN MỨC {emoji} {cat.upper()}:</b>\n"
+                        f"Đã tiêu <b>{format_currency(cat_s)}</b> / <b>{format_currency(cat_b)}</b> ({cat_pct:.1f}%)!"
+                    )
+                    alerted_categories.add(cat)
+                elif cat_pct >= 80:
+                    lines.append(
+                        f"\n⚠️ <b>CHÚ Ý {emoji} {cat.upper()}:</b>\n"
+                        f"Đã chạm <b>{cat_pct:.1f}%</b> hạn mức ({format_currency(cat_s)} / {format_currency(cat_b)})!"
+                    )
+                    alerted_categories.add(cat)
+
+        # 2. Check total budget alert
         user_budget = await repo.get_budget(user.id)
         if user_budget and user_budget > 0:
-            monthly_status = await repo.get_monthly_summary(user.id, now.year, now.month)
             total_month_spent = monthly_status["total"]
             spent_pct = (total_month_spent / user_budget * 100)
             if spent_pct >= 100:
                 lines.append(
-                    f"\n🚨 <b>VƯỢT HẠN MỨC THÁNG {now.month:02d}:</b>\n"
-                    f"Bạn đã tiêu <b>{format_currency(total_month_spent)}</b> / <b>{format_currency(user_budget)}</b> "
+                    f"\n🚨 <b>VƯỢT TỔNG NGÂN SÁCH THÁNG {now.month:02d}:</b>\n"
+                    f"Tổng chi tiêu: <b>{format_currency(total_month_spent)}</b> / <b>{format_currency(user_budget)}</b> "
                     f"({spent_pct:.1f}% ngân sách)!"
                 )
-            elif spent_pct >= 80:
+            elif spent_pct >= 80 and not alerted_categories:
                 lines.append(
-                    f"\n⚠️ <b>CHÚ Ý NGÂN SÁCH THÁNG {now.month:02d}:</b>\n"
-                    f"Bạn đã chạm <b>{spent_pct:.1f}%</b> ngân sách "
+                    f"\n⚠️ <b>CHÚ Ý TỔNG NGÂN SÁCH THÁNG {now.month:02d}:</b>\n"
+                    f"Tổng chi tiêu chạm <b>{spent_pct:.1f}%</b> "
                     f"({format_currency(total_month_spent)} / {format_currency(user_budget)})!"
                 )
     except Exception as exc_budget:
@@ -701,6 +845,36 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     )
             else:
                 await query.answer("Khoản chi tiêu không tồn tại hoặc đã bị xóa trước đó.", show_alert=True)
+        return
+
+    # Pattern 3: Budget hint button click
+    if data.startswith("hint_budget_"):
+        cat_name = data.replace("hint_budget_", "")
+        emoji = get_category_emoji(cat_name) if cat_name != "Tổng" else "💰"
+        sample_cmd = (
+            f"/budget {cat_name.lower()} 1tr" if cat_name != "Tổng" else "/budget tổng 5tr"
+        )
+        sample_half = sample_cmd.replace("1tr", "500k")
+        await query.answer()
+        if query.message:
+            await query.message.reply_text(
+                f"👉 <b>Cài đặt ngân sách cho {emoji} {cat_name}:</b>\n\n"
+                f"Hãy copy và gửi lệnh sau (thay bằng số tiền bạn muốn):\n"
+                f"• <code>{sample_cmd}</code> (hoặc <code>{sample_half}</code>)\n\n"
+                f"<i>(Gõ số 0 nếu muốn tắt ngân sách mục này: <code>/budget {cat_name.lower()} 0</code>)</i>",
+                parse_mode=ParseMode.HTML,
+            )
+        return
+
+    # Pattern 4: Clear all budgets
+    if data == "clear_all_budgets":
+        await repo.clear_category_budgets(user.id)
+        await query.answer("Đã xóa tất cả ngân sách!", show_alert=False)
+        if query.message:
+            await query.edit_message_text(
+                "🗑️ <b>Đã xóa toàn bộ cấu hình ngân sách (danh mục & tổng) thành công!</b>",
+                parse_mode=ParseMode.HTML,
+            )
         return
 
     await query.answer()

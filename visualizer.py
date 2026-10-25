@@ -17,16 +17,19 @@ from config import CATEGORY_EMOJIS, format_currency
 from database import Expense
 
 
-# Modern curated harmonious color palette for charts
+# Curated category color mapping
+CATEGORY_COLORS: Dict[str, str] = {
+    "Ăn uống": "#F59E0B",   # Amber / Orange
+    "Cà phê": "#8B5CF6",    # Purple / Mocha
+    "Công nghệ": "#3B82F6", # Bright Blue
+    "Di chuyển": "#10B981", # Emerald Green
+    "Khác": "#64748B",      # Slate Gray
+}
+
+# Fallback palette
 CHART_COLORS = [
-    "#3B82F6",  # Blue
-    "#10B981",  # Emerald
-    "#F59E0B",  # Amber
-    "#EC4899",  # Pink
-    "#8B5CF6",  # Purple
-    "#06B6D4",  # Cyan
-    "#EF4444",  # Red
-    "#64748B",  # Slate
+    "#F59E0B", "#8B5CF6", "#3B82F6", "#10B981", "#64748B",
+    "#EC4899", "#06B6D4", "#EF4444",
 ]
 
 
@@ -41,6 +44,10 @@ def generate_category_pie_chart(
     sorted_cats = sorted(category_data, key=lambda x: x["total"], reverse=True)
     labels = [c["category"] for c in sorted_cats]
     amounts = [c["total"] for c in sorted_cats]
+    slice_colors = [
+        CATEGORY_COLORS.get(cat, CHART_COLORS[idx % len(CHART_COLORS)])
+        for idx, cat in enumerate(labels)
+    ]
 
     # Create figure with dark-themed aesthetic
     fig, ax = plt.subplots(figsize=(8, 7), dpi=150)
@@ -54,7 +61,7 @@ def generate_category_pie_chart(
         autopct="%1.1f%%",
         pctdistance=0.78,
         startangle=140,
-        colors=CHART_COLORS[: len(amounts)],
+        colors=slice_colors,
         wedgeprops=dict(width=0.45, edgecolor="#0F172A", linewidth=2.5),
     )
 

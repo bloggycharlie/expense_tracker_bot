@@ -46,28 +46,23 @@ except pytz.UnknownTimeZoneError:
 # =====================================================================
 CATEGORIES: List[str] = [
     "Ăn uống",
+    "Cà phê",
+    "Công nghệ",
     "Di chuyển",
-    "Mua sắm",
-    "Hóa đơn & Dịch vụ",
-    "Giải trí",
-    "Sức khỏe",
-    "Giáo dục",
     "Khác",
 ]
 
 CATEGORY_EMOJIS: Dict[str, str] = {
     "Ăn uống": "🍜",
+    "Cà phê": "☕",
+    "Công nghệ": "💻",
     "Di chuyển": "🛵",
-    "Mua sắm": "🛍️",
-    "Hóa đơn & Dịch vụ": "💡",
-    "Giải trí": "🎬",
-    "Sức khỏe": "💊",
-    "Giáo dục": "📚",
     "Khác": "📦",
 }
 
 DEFAULT_CATEGORY = "Khác"
 DEFAULT_EMOJI = "📦"
+
 
 
 def get_category_emoji(category: str) -> str:

@@ -32,9 +32,9 @@ class ParsedExpenseItem(BaseModel):
         ...,
         description=(
             f"One of the allowed categories: {', '.join(CATEGORIES)}. "
-            "Choose 'Ăn uống' for food, drinks, coffee, snacks; 'Di chuyển' for grab, taxi, gas, parking; "
-            "'Mua sắm' for clothes, gadgets, shopping; 'Hóa đơn & Dịch vụ' for utilities, wifi, rent; "
-            "'Giải trí' for movies, games, travel; 'Sức khỏe' for medicine, gym; 'Giáo dục' for books, courses; or 'Khác'."
+            "Choose 'Ăn uống' for meals/food; 'Cà phê' for coffee, tea, cafe drinks; "
+            "'Công nghệ' for app subscriptions (Netflix, Spotify, iCloud, ChatGPT, SaaS); "
+            "'Di chuyển' for transportation (grab, be, gas, parking); or 'Khác' for miscellaneous remaining expenses."
         ),
     )
     description: str = Field(
@@ -108,18 +108,15 @@ QUY TẮC NHẬN DIỆN TIỀN TỆ VIỆT NAM (VND):
 QUY TẮC TÁCH NHIỀU KHOẢN TRONG 1 TIN NHẮN (MULTI-ITEM):
 - Nếu tin nhắn chứa nhiều khoản chi tiêu (Ví dụ: "sáng phở 45k cf 30k" hoặc "grab 32k, trưa bún bò 40k"), bạn BẮT BUỘC phải tách thành từng mục riêng trong danh sách items:
   1. Phở sáng (45.000 VND - Ăn uống)
-  2. Cà phê (30.000 VND - Ăn uống)
+  2. Cà phê (30.000 VND - Cà phê)
 
 QUY TẮC XÁC ĐỊNH DANH MỤC (CATEGORY):
-Chỉ chọn đúng 1 trong các danh mục sau:
-1. "Ăn uống": đồ ăn, nước uống, phở, bún, cơm, bánh mì, trà sữa, cf, cà phê, siêu thị thực phẩm, ăn vặt...
-2. "Di chuyển": grab, be, taxi, xe ôm, xăng, gửi xe, vé xe bus, vé tàu, vé máy bay, sửa xe...
-3. "Mua sắm": quần áo, giày dép, shopee, lazada, tiktok shop, đồ gia dụng, thiết bị công nghệ...
-4. "Hóa đơn & Dịch vụ": điện, nước, internet, tiền phòng/tiền nhà, netflix, spotify, icloud, cước điện thoại...
-5. "Giải trí": xem phim rạp, karaoke, chơi game, concert, du lịch...
-6. "Sức khỏe": thuốc, khám bệnh, nha khoa, phòng gym, yoga, thực phẩm chức năng...
-7. "Giáo dục": học phí, sách vở, văn phòng phẩm, khóa học online...
-8. "Khác": các khoản không thuộc nhóm trên.
+BẮT BUỘC chỉ chọn đúng 1 trong 5 danh mục sau:
+1. "Ăn uống": đồ ăn, bữa ăn, thực phẩm, cơm, phở, bún, bánh mì, đồ ăn vặt, tiệm ăn, siêu thị thực phẩm... (LƯU Ý: cà phê, trà sữa, đồ uống giải khát phải xếp vào "Cà phê").
+2. "Cà phê": cà phê, cf, coffee, trà sữa, trà đá, nước ép, sinh tố, đồ uống tại quán nước/tiệm cà phê (Highlands, Starbucks, Phê La, The Coffee House, Phúc Long, quán cóc...).
+3. "Công nghệ": subscription các app/phần mềm, dịch vụ số (Netflix, Spotify, iCloud, ChatGPT, Claude, Youtube Premium, Google One, hosting, vps, domain, app store...).
+4. "Di chuyển": chi phí đi lại gồm tiền xăng xe, xe ôm công nghệ, Grab, Be, Gojek, taxi, vé xe buýt, vé gửi xe, tiền gửi xe, tiền sửa xe, vá xe...
+5. "Khác": các thứ còn lại nếu không thuộc 4 danh mục trên (mua sắm đồ dùng gia đình, quần áo, y tế, cắt tóc, v.v.).
 
 QUY TẮC NGÀY THÁNG (DATE):
 - Mặc định là ngày hôm nay: {current_date_str}

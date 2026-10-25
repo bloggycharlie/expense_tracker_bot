@@ -107,12 +107,32 @@ class BaseExpenseRepository(ABC):
 
     @abstractmethod
     async def set_budget(self, user_id: int, amount: float) -> None:
-        """Set monthly budget limit for a user."""
+        """Set overall monthly budget limit for a user."""
         pass
 
     @abstractmethod
     async def get_budget(self, user_id: int) -> Optional[float]:
         """Retrieve monthly budget limit for a user, if configured."""
+        pass
+
+    @abstractmethod
+    async def set_category_budget(self, user_id: int, category: str, amount: float) -> None:
+        """Set budget limit for a specific category."""
+        pass
+
+    @abstractmethod
+    async def get_category_budgets(self, user_id: int) -> Dict[str, float]:
+        """Retrieve all category budgets configured for a user."""
+        pass
+
+    @abstractmethod
+    async def get_category_budget(self, user_id: int, category: str) -> Optional[float]:
+        """Retrieve budget limit for a specific category."""
+        pass
+
+    @abstractmethod
+    async def clear_category_budgets(self, user_id: int) -> None:
+        """Clear all category and overall budgets for a user."""
         pass
 
     @abstractmethod
@@ -152,6 +172,17 @@ class SQLiteExpenseRepository(BaseExpenseRepository):
                     user_id INTEGER PRIMARY KEY,
                     monthly_budget REAL NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS category_budgets (
+                    user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, category)
                 );
                 """
             )
@@ -369,7 +400,61 @@ class SQLiteExpenseRepository(BaseExpenseRepository):
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
+                if row and float(row[0]) > 0:
+                    return float(row[0])
+            # If total budget is not explicitly set, sum all category budgets if present
+            async with db.execute(
+                "SELECT SUM(amount) FROM category_budgets WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0] is not None and float(row[0]) > 0:
+                    return float(row[0])
+                return None
+
+    async def set_category_budget(self, user_id: int, category: str, amount: float) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            if amount <= 0:
+                await db.execute(
+                    "DELETE FROM category_budgets WHERE user_id = ? AND category = ?",
+                    (user_id, category),
+                )
+            else:
+                await db.execute(
+                    """
+                    INSERT INTO category_budgets (user_id, category, amount, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id, category) DO UPDATE SET
+                        amount = excluded.amount,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, category, float(amount)),
+                )
+            await db.commit()
+
+    async def get_category_budgets(self, user_id: int) -> Dict[str, float]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT category, amount FROM category_budgets WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return {r[0]: float(r[1]) for r in rows}
+
+    async def get_category_budget(self, user_id: int, category: str) -> Optional[float]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT amount FROM category_budgets WHERE user_id = ? AND category = ?",
+                (user_id, category),
+            ) as cursor:
+                row = await cursor.fetchone()
                 return float(row[0]) if row else None
+
+    async def clear_category_budgets(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM category_budgets WHERE user_id = ?", (user_id,))
+            await db.execute("DELETE FROM budgets WHERE user_id = ?", (user_id,))
+            await db.commit()
 
     async def get_all_expenses(
         self, user_id: int, year: Optional[int] = None, month: Optional[int] = None
@@ -425,6 +510,13 @@ class PostgresExpenseRepository(BaseExpenseRepository):
                     user_id BIGINT PRIMARY KEY,
                     monthly_budget DOUBLE PRECISION NOT NULL,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS category_budgets (
+                    user_id BIGINT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount DOUBLE PRECISION NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, category)
                 );
                 CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses (user_id, date);
                 CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses (created_at);
@@ -651,7 +743,58 @@ class PostgresExpenseRepository(BaseExpenseRepository):
             row = await conn.fetchrow(
                 "SELECT monthly_budget FROM budgets WHERE user_id = $1", user_id
             )
-            return float(row["monthly_budget"]) if row else None
+            if row and float(row["monthly_budget"]) > 0:
+                return float(row["monthly_budget"])
+            sum_row = await conn.fetchrow(
+                "SELECT SUM(amount) AS total FROM category_budgets WHERE user_id = $1",
+                user_id,
+            )
+            if sum_row and sum_row["total"] is not None and float(sum_row["total"]) > 0:
+                return float(sum_row["total"])
+            return None
+
+    async def set_category_budget(self, user_id: int, category: str, amount: float) -> None:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            if amount <= 0:
+                await conn.execute(
+                    "DELETE FROM category_budgets WHERE user_id = $1 AND category = $2",
+                    user_id, category,
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO category_budgets (user_id, category, amount, updated_at)
+                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id, category) DO UPDATE
+                    SET amount = EXCLUDED.amount, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    user_id, category, float(amount),
+                )
+
+    async def get_category_budgets(self, user_id: int) -> Dict[str, float]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT category, amount FROM category_budgets WHERE user_id = $1",
+                user_id,
+            )
+            return {r["category"]: float(r["amount"]) for r in rows}
+
+    async def get_category_budget(self, user_id: int, category: str) -> Optional[float]:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT amount FROM category_budgets WHERE user_id = $1 AND category = $2",
+                user_id, category,
+            )
+            return float(row["amount"]) if row else None
+
+    async def clear_category_budgets(self, user_id: int) -> None:
+        pool = await self.get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM category_budgets WHERE user_id = $1", user_id)
+            await conn.execute("DELETE FROM budgets WHERE user_id = $1", user_id)
 
     async def get_all_expenses(
         self, user_id: int, year: Optional[int] = None, month: Optional[int] = None
