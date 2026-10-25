@@ -78,11 +78,14 @@ class ExpenseAIParser:
 
     @property
     def client(self) -> genai.Client:
-        """Lazy initialization of genai.Client."""
+        """Lazy initialization of genai.Client with timeout."""
         if self._client is None:
             if not self.api_key:
                 raise ValueError("GEMINI_API_KEY is not set. Please configure it in .env")
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=10000),
+            )
         return self._client
 
     def _build_system_instruction(self, current_dt: datetime) -> str:
@@ -121,57 +124,41 @@ Chỉ chọn đúng 1 trong các danh mục sau:
 QUY TẮC NGÀY THÁNG (DATE):
 - Mặc định là ngày hôm nay: {current_date_str}
 - Nếu người dùng nhắc "hôm qua", hãy tính trừ 1 ngày so với ngày hiện tại.
-- Nếu người dùng nhắc "hôm kia", hãy tính trừ 2 ngày so với ngày hiện tại.
+- - Nếu người dùng nhắc "hôm kia", hãy tính trừ 2 ngày so với ngày hiện tại.
 - Định dạng ngày BẮT BUỘC là YYYY-MM-DD.
 
-NẾU TIN NHẮN KHÔNG PHẢI KHOẢN CHI TIÊU:
+NẾU TIN NHẮN KHÔNG PHẢI KHOẢN CHI TIÊU MỚI (Ví dụ: chào hỏi, hỏi cách dùng, yêu cầu xóa/sửa/hủy bỏ giao dịch):
 - Đặt is_expense = False
 - items = []
-- Điền user_reply một câu chào lịch sự và hướng dẫn ngắn gọn (ví dụ: "Chào bạn! Hãy nhắn cho tôi khoản chi của bạn, ví dụ: 'Cơm trưa 40k' hoặc 'Grab 35k đi làm' nhé!").
+- Nếu người dùng muốn XÓA/BỎ/HỦY khoản chi tiêu: điền user_reply hướng dẫn: "💡 Để xóa khoản chi tiêu, bạn vui lòng gõ lệnh /recent để xem danh sách gần đây và bấm nút [🗑️ Xóa] tương ứng, hoặc bấm nút [❌ Hoàn tác] ngay khi vừa ghi nhé!"
+- Nếu là chào hỏi hoặc nội dung khác: điền user_reply câu chào lịch sự và hướng dẫn ngắn gọn (ví dụ: "Chào bạn! Hãy nhắn khoản chi tiêu để tôi ghi nhận, ví dụ: 'Cơm trưa 40k' hoặc 'Grab 35k đi làm' nhé!").
 """
 
     def _sync_parse(self, text: str, current_dt: datetime) -> ExpenseParseResponse:
-        """Synchronous execution of Gemini API call with Structured Outputs."""
+        """Synchronous execution of Gemini API call with fast fallback models."""
         system_instruction = self._build_system_instruction(current_dt)
+        candidate_models = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
 
-        # Primary: Official Interactions API for gemini-3.8-flash
-        try:
-            interaction = self.client.interactions.create(
-                model="gemini-3.8-flash",
-                input=f"{system_instruction}\n\nTin nhắn người dùng: {text}",
-                response_format={
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": ExpenseParseResponse.model_json_schema(),
-                },
-            )
-            output = interaction.output_text or "{}"
-            return ExpenseParseResponse.model_validate_json(output)
-
-        except Exception as e_interactions:
-            logger.warning(
-                "Interactions API encountered an issue (%s), attempting fallback...",
-                e_interactions,
-            )
-
-            # Fallback: Using models.generate_content with types.GenerateContentConfig
+        last_error = None
+        for model_name in candidate_models:
             try:
-                config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=ExpenseParseResponse,
-                    system_instruction=system_instruction,
-                    temperature=0.1,
+                interaction = self.client.interactions.create(
+                    model=model_name,
+                    input=f"{system_instruction}\n\nTin nhắn người dùng: {text}",
+                    response_format={
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": ExpenseParseResponse.model_json_schema(),
+                    },
                 )
-                response = self.client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=f"Tin nhắn người dùng: {text}",
-                    config=config,
-                )
-                raw_text = response.text or "{}"
-                return ExpenseParseResponse.model_validate_json(raw_text)
-            except Exception as e_fallback:
-                logger.error("All AI parse attempts failed. Error: %s", e_fallback)
-                raise
+                output = interaction.output_text or "{}"
+                return ExpenseParseResponse.model_validate_json(output)
+            except Exception as exc:
+                logger.warning("Interactions API with %s failed (%s), trying next...", model_name, exc)
+                last_error = exc
+
+        logger.error("All AI parse models failed. Last error: %s", last_error)
+        raise last_error
 
     async def parse_expense(
         self, text: str, current_dt: Optional[datetime] = None
